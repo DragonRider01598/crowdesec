@@ -1,36 +1,79 @@
-name: Build Custom Caddy
+name: Build and Publish crowdesec-caddy
 
 on:
-  push:
-    branches: [ "main" ]
   schedule:
-    - cron: '0 0 * * *' # Builds once a day to catch security updates
+    - cron: '0 0 * * *' # Runs daily at midnight
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+  workflow_dispatch: 
 
 jobs:
-  build:
+  check-and-build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
 
     steps:
-      - name: Checkout code
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Lowercase repo name
+      - name: Lowercase Repository Owner
         run: |
-          echo "REPO_LOWER=${GITHUB_REPOSITORY_OWNER,,}" >> ${GITHUB_ENV}
+          echo "OWNER_LC=${OWNER,,}" >> ${GITHUB_ENV}
+        env:
+          OWNER: "${{ github.repository_owner }}"
 
-      - name: Login to GitHub Container Registry
+      # Compares the 'digest' of official caddy:latest with ghcr image
+      - name: Check if Caddy has updated
+        id: check
+        uses: lucacome/docker-image-update-checker@v1
+        with:
+          base-image: library/caddy:latest
+          image: ghcr.io/${{ env.OWNER_LC }}/crowdesec-caddy:latest
+
+      - name: Set up Docker Buildx
+        if: steps.check.outputs.needs-updating == 'true' || github.event_name != 'schedule'
+        uses: actions/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        if: steps.check.outputs.needs-updating == 'true' || github.event_name != 'schedule'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      - name: Login to GHCR
+        if: steps.check.outputs.needs-updating == 'true' || github.event_name != 'schedule'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push
+      - name: Extract Metadata
+        if: steps.check.outputs.needs-updating == 'true' || github.event_name != 'schedule'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ secrets.DOCKER_HUB_USERNAME }}/crowdesec-caddy
+            ghcr.io/${{ env.OWNER_LC }}/crowdesec-caddy
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+
+      - name: Build and Push
+        if: steps.check.outputs.needs-updating == 'true' || github.event_name != 'schedule'
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: ghcr.io/${{ env.REPO_LOWER }}/crowdesec-caddy:latest
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Ensures pulling of the absolute latest base image layers
+          pull: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
