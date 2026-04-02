@@ -40,13 +40,21 @@ jobs:
       # Compares the 'digest' of official caddy:latest with ghcr image
       - name: Check if Caddy has updated
         id: check
-        continue-on-error: true
-        uses: lucacome/docker-image-update-checker@v1
-        with:
-          base-image: library/caddy:latest
-          image: ghcr.io/${{ env.OWNER_LC }}/crowdesec-caddy:latest
-        env:
-          DOCKER_CONFIG: /home/runner/.docker
+        run: |
+          BASE_DIGEST=$(docker buildx imagetools inspect caddy:latest --format "{{json .Manifest.Digest}}")
+
+          CURRENT_DIGEST=$(docker buildx imagetools inspect ghcr.io/${{ env.OWNER_LC }}/crowdesec-caddy:latest --format "{{json .Manifest.Digest}}" || echo "none")
+
+          echo "Base: $BASE_DIGEST"
+          echo "Current: $CURRENT_DIGEST"
+
+          if [ "$BASE_DIGEST" != "$CURRENT_DIGEST" ] || [ "$CURRENT_DIGEST" = "none" ]; then
+            echo "needs-updating=true" >> $GITHUB_OUTPUT
+            echo "Status: Build required."
+          else
+            echo "needs-updating=false" >> $GITHUB_OUTPUT
+            echo "Status: Up to date."
+          fi
 
       - name: Set up Docker Buildx
         if: steps.check.outputs.needs-updating == 'true' || steps.check.outcome == 'failure'|| github.event_name != 'schedule'
